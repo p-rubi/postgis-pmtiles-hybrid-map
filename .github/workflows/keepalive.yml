@@ -1,0 +1,126 @@
+# Keeps the Supabase project awake.
+#
+# Supabase pauses free-tier projects after 7 days without activity. This
+# workflow wakes up three times a day at odd minutes, rolls a die and, on
+# average a bit more than once a day, makes ONE real request to the public
+# API, the same kind of request the map makes. Which request, where in the
+# city and at what minute all vary from run to run, so the traffic looks like
+# a person opening the map now and then rather than a clock.
+#
+# Guarantees, in spite of the randomness:
+#   - every third day the first run of the day always pings, so the longest
+#     possible gap is about 3 days (5 around New Year), far from the 7-day limit;
+#   - a ping that fails after retries fails the run, and GitHub emails the
+#     repository owner;
+#   - GitHub disables scheduled workflows in repositories without activity for
+#     60 days; the last step re-enables this one on every run to avoid that.
+#
+# Repository secrets: SUPABASE_URL, SUPABASE_ANON_KEY (the public anon key,
+# the same one the map uses; never the service_role key).
+# Manual run: Actions → keepalive → Run workflow (always pings, no wait).
+
+name: keepalive
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+    - cron: '43 11 * * *'
+    - cron: '29 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write     # last step: re-enable this workflow
+  contents: read
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Decide whether this run pings
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run: ping now"
+            echo "ping=true"  >> "$GITHUB_OUTPUT"
+            echo "wait=0"     >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          roll=$((RANDOM % 100))
+          doy=$((10#$(date -u +%j)))
+          hour=$((10#$(date -u +%H)))
+          # 3 runs a day × 40 % ≈ 1.2 pings a day
+          if [ "$roll" -lt 40 ]; then
+            reason="roll $roll < 40"; ping=true
+          elif [ $((doy % 3)) -eq 0 ] && [ "$hour" -lt 9 ]; then
+            reason="day $doy: guaranteed ping"; ping=true
+          else
+            reason="roll $roll, skip"; ping=false
+          fi
+          echo "$reason"
+          echo "ping=$ping" >> "$GITHUB_OUTPUT"
+          echo "wait=$((RANDOM % 900))" >> "$GITHUB_OUTPUT"
+
+      - name: Random wait (0–15 min)
+        if: steps.decide.outputs.ping == 'true'
+        run: |
+          echo "Waiting ${{ steps.decide.outputs.wait }} s"
+          sleep "${{ steps.decide.outputs.wait }}"
+
+      - name: Ping the API
+        if: steps.decide.outputs.ping == 'true'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          : "${SUPABASE_URL:?missing secret SUPABASE_URL}"
+          : "${SUPABASE_ANON_KEY:?missing secret SUPABASE_ANON_KEY}"
+          API="${SUPABASE_URL%/}/rest/v1"
+
+          # A random point inside Barcelona (lon 2.10–2.21, lat 41.36–41.45)
+          read -r LON LAT X Y < <(awk -v s="$RANDOM$RANDOM" 'BEGIN {
+            srand(s); pi = atan2(0, -1)
+            lon = 2.10 + rand() * 0.11; lat = 41.36 + rand() * 0.09
+            n = 2 ^ 14; r = lat * pi / 180
+            x = int((lon + 180) / 360 * n)
+            y = int((1 - log(sin(r) / cos(r) + 1 / cos(r)) / pi) / 2 * n)
+            printf "%.5f %.5f %d %d\n", lon, lat, x, y }')
+          CATS=(salut educacio cultura esports lleure comerc restauracio mobilitat)
+          CAT=${CATS[$((RANDOM % ${#CATS[@]}))]}
+
+          # Four requests the map really makes; one of them, at random
+          case $((RANDOM % 4)) in
+            0) WHAT="dataset info"
+               URL="$API/dataset_info?select=area,extract_timestamp" ;;
+            1) WHAT="POI tile 14/$X/$Y"
+               URL="$API/rpc/mvt?z=14&x=$X&y=$Y&layer=pois" ;;
+            2) WHAT="nearest '$CAT' to $LON,$LAT"
+               URL="$API/rpc/nearest_services?lon=$LON&lat=$LAT&category=$CAT&n=5" ;;
+            3) R=$(( (RANDOM % 8 + 3) * 100 ))
+               WHAT="summary within $R m of $LON,$LAT"
+               URL="$API/rpc/radius_summary?lon=$LON&lat=$LAT&radius_m=$R" ;;
+          esac
+          echo "Request: $WHAT"
+
+          # A project that has just woken up can time out: retry with backoff
+          for attempt in 1 2 3 4; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$URL" \
+              -H "apikey: $SUPABASE_ANON_KEY" \
+              -H "Accept-Profile: api" \
+              -A "keepalive (github.com/${{ github.repository }})" || echo 000)
+            echo "Attempt $attempt: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep $((attempt * 20))
+          done
+          echo "::error::The API did not answer 200. Is the Supabase project paused? Restore it from the Supabase dashboard."
+          exit 1
+
+      - name: Keep this scheduled workflow enabled
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/keepalive.yml/enable"

@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title data-i18n="app.docTitle">Mapa de serveis de Barcelona</title>
+<!-- Només l'esquelet de la pàgina: l'aspecte és a app.css i el comportament a js/ -->
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+<link href="./app.css" rel="stylesheet" />
+</head>
+<body>
+
+<!-- Barra superior: el títol del projecte, el botó que plega el panell,
+     l'idioma i l'enllaç al repositori. És l'única part de la interfície que
+     es veu sempre, també amb el panell plegat (en un mòbil, arrenca plegat). -->
+<header id="topbar">
+  <button type="button" id="panel-toggle" class="iconbtn" aria-controls="panel" aria-expanded="true">
+    <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
+      <rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2"/><line x1="8" y1="4" x2="8" y2="16"/>
+    </svg>
+  </button>
+  <h1 data-i18n="app.title">Mapa de serveis de Barcelona</h1>
+  <!-- El selector d'idioma el construeix js/ui.js a partir dels diccionaris
+       que hi ha carregats, i no surt si només n'hi ha un. -->
+  <div class="lang" id="lang" role="group" data-i18n-aria-label="a11y.lang"></div>
+  <a class="iconbtn" href="https://github.com/p-rubi/postgis-pmtiles-hybrid-map" target="_blank" rel="noopener"
+     data-i18n-title="a11y.repo" data-i18n-aria-label="a11y.repo">
+    <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+  </a>
+</header>
+
+<div id="map"></div>
+
+<!-- Els id d'aquest panell són el contracte amb el codi: js/ui.js els busca
+     un per un amb $('...'). Si en canvies cap, canvia'l també allà.
+     Tres blocs: què es veu, què s'analitza i què es consulta. Tots tres són
+     <details>: el primer obert i els altres dos plegats.
+
+     ELS TEXTOS NO SÓN AQUÍ. Cada text porta data-i18n amb la seva clau, i
+     js/i18n.js hi escriu el de l'idioma actiu (web/lang/). El que hi ha
+     escrit és el català, que és el que es veu mentre no arrenca el JavaScript.
+     data-i18n substitueix TOT el contingut de l'element: per això el text va
+     dins del seu propi <span> sempre que l'element porti res més. -->
+<aside id="panel">
+
+  <!-- Avís que només surt si l'API no respon (js/ui.js, setStatus) -->
+  <p id="status" hidden></p>
+
+  <!-- Capes: només visualització -->
+  <details class="pblock" id="blk-layers" open>
+    <summary>
+      <h2><span data-i18n="block1.title">Capes</span>
+        <span class="act" data-i18n-title="a11y.activeLayers"></span>
+      </h2>
+    </summary>
+
+    <h3 data-i18n="block1.basemap">Mapa base</h3>
+    <div class="grid2">
+      <label><input type="checkbox" id="c-roads" checked> <span data-i18n="block1.roads">Carrers</span></label>
+      <label id="lbl-buildings"><input type="checkbox" id="c-buildings" checked> <span data-i18n="block1.buildings">Edificis</span></label>
+      <label><input type="checkbox" id="c-landuse" checked> <span data-i18n="block1.landuse">Usos del sòl</span></label>
+      <label><input type="checkbox" id="c-water" checked> <span data-i18n="block1.water">Aigua</span></label>
+    </div>
+
+    <div class="h3row">
+      <label><input type="checkbox" id="c-pois" checked> <span data-i18n="block1.pois">Serveis</span></label>
+      <button type="button" class="info" data-tip="tip-pois" data-i18n-aria-label="a11y.tipPois"
+              aria-label="D'on surten els serveis?">i</button>
+    </div>
+    <select id="sel-cat" data-i18n-aria-label="block1.category"></select>
+    <select id="sel-sub" data-i18n-aria-label="block1.subcategory"></select>
+  </details>
+
+  <!-- Anàlisi: sempre sobre la subcategoria triada a Capes.
+       Plegar aquest bloc NO apaga l'anàlisi (a diferència de Consultes, on el
+       mode de consulta captura el clic del mapa): aquí el que hi ha actiu és
+       estat del mapa, i apagar-lo cada cop que es plega el bloc faria perdre
+       la capa. El punt de la capçalera avisa que hi ha alguna cosa encesa. -->
+  <details class="pblock" id="blk-analysis">
+    <summary>
+      <h2><span data-i18n="block2.title">Anàlisi</span>
+        <button type="button" class="info" data-tip="tip-analisi" data-i18n-aria-label="a11y.tipAnalysis"
+                aria-label="Com es calcula l'anàlisi?">i</button>
+        <span class="act" data-i18n-title="a11y.activeAnalysis"></span>
+      </h2>
+    </summary>
+    <p class="note" id="an-note"></p>
+
+    <label id="lbl-access"><input type="checkbox" id="c-access"> <span data-i18n="block2.access">Accessibilitat dels edificis</span></label>
+    <div class="sub-ctl" id="ctl-access">
+      <!-- El pas de 50 m no és arbitrari: etl/build_tiles.sh arrodoneix les
+           distàncies a 25 m, i la llegenda (0,5×, 1× i 2× el llindar) només
+           és exacta si els talls en són múltiples -->
+      <label class="block" id="lbl-thr">
+        <span class="row-between"><span data-i18n="block2.threshold">Llindar</span> <span class="val" id="thr-val">500 m</span></span>
+        <input type="range" id="threshold" min="100" max="3000" step="50" value="500">
+      </label>
+      <div id="legend" hidden></div>
+    </div>
+
+    <label id="lbl-infl"><input type="checkbox" id="c-infl"> <span data-i18n="block2.influence">Àrea d'influència</span></label>
+    <div class="sub-ctl" id="ctl-infl">
+      <div class="seg sm" id="radius" role="group" data-value="500" data-i18n-aria-label="block2.radius">
+        <button type="button" data-value="300">300 m</button>
+        <button type="button" data-value="500">500 m</button>
+        <button type="button" data-value="1000">1 km</button>
+      </div>
+    </div>
+  </details>
+
+  <!-- Consultes: plegat d'entrada. Cap consulta activa vol dir que el clic
+       obre la fitxa dels punts; tornar a clicar el botó actiu la desactiva, i
+       plegar el bloc també (js/ui.js), perquè el clic no llanci consultes des
+       d'un bloc que no es veu. -->
+  <details class="pblock" id="blk-queries">
+    <summary>
+      <h2><span data-i18n="block3.title">Consultes</span>
+        <button type="button" class="info" data-tip="tip-queries" data-i18n-aria-label="a11y.tipQueries"
+                aria-label="Com funcionen les consultes?">i</button>
+        <!-- Aquest bloc no s'encén mai (plegar-lo desactiva la consulta), però
+             el punt hi és igualment: el seu marge automàtic és el que manté la
+             fletxa a la dreta, com als altres dos. -->
+        <span class="act"></span>
+      </h2>
+    </summary>
+    <!-- Els dos modes i, al costat, el botó que desactiva la consulta i
+         n'esborra el resultat. Sense cap mode actiu queda desactivat. -->
+    <div class="mode-row">
+      <div class="seg" id="mode">
+        <button type="button" data-mode="nearest" data-i18n="block3.nearest" aria-pressed="false">Més propers</button>
+        <button type="button" data-mode="radius" data-i18n="block3.radius" aria-pressed="false">Resum en un radi</button>
+      </div>
+      <button type="button" id="q-clear" class="clear" disabled
+              data-i18n-title="block3.clear" data-i18n-aria-label="block3.clear">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </div>
+    <div id="opt-nearest" hidden>
+      <div class="row-between">
+        <span data-i18n="block3.results">Resultats</span>
+        <div class="seg sm" id="nearest-n" role="group" data-value="5" data-i18n-aria-label="block3.results">
+          <button type="button" data-value="3">3</button>
+          <button type="button" data-value="5">5</button>
+          <button type="button" data-value="10">10</button>
+        </div>
+      </div>
+    </div>
+    <div id="opt-radius" hidden>
+      <!-- Mateixes unitats i pas que el llindar d'Anàlisi; el màxim el fixa
+           api.radius_summary (2 km) -->
+      <label class="block">
+        <span class="row-between"><span data-i18n="block3.radiusLabel">Radi</span> <span class="val" id="q-radius-val">500 m</span></span>
+        <input type="range" id="q-radius" min="100" max="2000" step="50" value="500">
+      </label>
+    </div>
+    <p class="note" id="mode-note"></p>
+    <div id="results"></div>
+  </details>
+
+</aside>
+
+<!-- Textos dels botons (i). js/ui.js els copia al globus flotant #tip: van
+     fora del panell perquè el panell té scroll i els retallaria. Cada text
+     porta la seva clau: el globus es tradueix igual que la resta. -->
+<template id="tip-pois">
+  <b data-i18n="tip.pois.head">Dades d'OpenStreetMap</b>
+  <p data-i18n="tip.pois.p1"></p>
+  <p data-i18n="tip.pois.p2"></p>
+  <p data-i18n="tip.pois.p3"></p>
+</template>
+
+<template id="tip-analisi">
+  <b data-i18n="tip.analysis.head">Anàlisi de la subcategoria triada</b>
+  <p data-i18n-html="tip.analysis.p1_html"></p>
+  <p data-i18n-html="tip.analysis.p2_html"></p>
+  <p data-i18n="tip.analysis.p3"></p>
+</template>
+
+<template id="tip-queries">
+  <b data-i18n="tip.queries.head">Consultes en temps real</b>
+  <p data-i18n="tip.queries.intro"></p>
+
+  <div class="tip-case">
+    <!-- Clic (anell), tres serveis numerats per distància i un de més lluny
+         que no entra al resultat -->
+    <svg viewBox="0 0 96 64" width="96" height="64" aria-hidden="true">
+      <rect width="96" height="64" rx="6" fill="#12140f"/>
+      <circle cx="88" cy="56" r="2.5" fill="#6b6d63"/>
+      <circle cx="8" cy="8" r="2.5" fill="#6b6d63"/>
+      <g stroke="#c3d64b" stroke-width="1.2" opacity=".8">
+        <line x1="30" y1="36" x2="50" y2="22"/>
+        <line x1="30" y1="36" x2="58" y2="48"/>
+        <line x1="30" y1="36" x2="76" y2="18"/>
+      </g>
+      <circle cx="30" cy="36" r="4" fill="#12140f" stroke="#c3d64b" stroke-width="2"/>
+      <g fill="#c3d64b" stroke="#12140f" stroke-width="1.5">
+        <circle cx="50" cy="22" r="6.5"/><circle cx="58" cy="48" r="6.5"/><circle cx="76" cy="18" r="6.5"/>
+      </g>
+      <g fill="#12140f" font-family="Arial,sans-serif" font-size="8" font-weight="700"
+         text-anchor="middle" dominant-baseline="central">
+        <text x="50" y="22">1</text><text x="58" y="48">2</text><text x="76" y="18">3</text>
+      </g>
+    </svg>
+    <div><b data-i18n="tip.queries.nearest.title">Més propers</b>
+      <p data-i18n="tip.queries.nearest.desc"></p>
+    </div>
+  </div>
+
+  <div class="tip-case">
+    <!-- Cercle del radi: compten els punts de dins, no els de fora -->
+    <svg viewBox="0 0 96 64" width="96" height="64" aria-hidden="true">
+      <rect width="96" height="64" rx="6" fill="#12140f"/>
+      <circle cx="48" cy="32" r="24" fill="#c3d64b" fill-opacity=".12"
+              stroke="#c3d64b" stroke-width="1.2" stroke-dasharray="3 2"/>
+      <g fill="#ef4444"><circle cx="38" cy="22" r="3"/><circle cx="58" cy="40" r="3"/><circle cx="44" cy="44" r="3"/></g>
+      <g fill="#3b82f6"><circle cx="60" cy="24" r="3"/><circle cx="34" cy="36" r="3"/></g>
+      <g fill="#6b6d63"><circle cx="10" cy="12" r="2.5"/><circle cx="86" cy="52" r="2.5"/><circle cx="84" cy="10" r="2.5"/></g>
+      <circle cx="48" cy="32" r="3.5" fill="#12140f" stroke="#c3d64b" stroke-width="2"/>
+    </svg>
+    <div><b data-i18n="tip.queries.radius.title">Resum en un radi</b>
+      <p data-i18n="tip.queries.radius.desc"></p>
+    </div>
+  </div>
+
+  <p data-i18n="tip.queries.outro"></p>
+</template>
+
+<!-- Biblioteques externes: defineixen maplibregl i pmtiles com a globals -->
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.2.0/dist/pmtiles.js"></script>
+
+<!-- Fitxers generats per etl/web_config.sh: defineixen window.GEODB i
+     window.GEODB_CATEGORIES. Van com a scripts clàssics, i per tant
+     s'executen abans que el mòdul de sota, que ja els troba posats. -->
+<script src="./config.js"></script>
+<script src="./categories.js"></script>
+
+<!-- Tot el codi del visor penja d'aquest únic mòdul. type="module" fa que el
+     navegador segueixi tot sol la cadena d'imports de js/. -->
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
